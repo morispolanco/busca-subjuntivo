@@ -1,41 +1,48 @@
 import streamlit as st
 import spacy
-import csv
-import io
 import pandas as pd
 import plotly.express as px
 import re
+import subprocess
+import sys
 
-# Configuración de la página
-st.set_page_config(
-    page_title="🔍 Subjuntivo Finder",
-    page_icon="🔍",
-    layout="wide"
-)
+# Configuración de página
+st.set_page_config(page_title="🔍 Subjuntivo Finder", layout="wide")
+st.title("🔍 Buscador de Verbos en Modo Subjuntivo")
+st.markdown("Sube un archivo de texto en español para analizar verbos en **subjuntivo**.")
 
-# Cargar el modelo de spaCy (una sola vez, en caché)
+# --- FUNCIÓN MEJORADA PARA CARGAR EL MODELO ---
 @st.cache_resource
 def load_nlp():
     try:
         return spacy.load("es_core_news_sm")
-    except OSError as e:
-        st.error(f"""
-        ❌ No se pudo cargar el modelo 'es_core_news_sm'.  
-        Asegúrate de que está en `requirements.txt` como:
+    except OSError:
+        st.error("❌ No se encontró el modelo 'es_core_news_sm'. Intentando instalarlo...")
         
-        `https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0.tar.gz`
-        
-        Error: {e}
-        """)
-        st.stop()
+        try:
+            # Intentar instalar directamente desde la URL del modelo
+            command = [
+                sys.executable, "-m", "pip", "install",
+                "https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0.tar.gz"
+            ]
+            result = subprocess.run(command, capture_output=True, text=True)
 
+            if result.returncode != 0:
+                st.error("❌ Falló la instalación del modelo.")
+                st.code(result.stderr)
+                st.stop()
+            else:
+                st.success("✅ Modelo instalado correctamente.")
+                return spacy.load("es_core_news_sm")
+        except Exception as e:
+            st.error("❌ Error al instalar el modelo.")
+            st.exception(e)
+            st.stop()
+
+# Cargar modelo
 nlp = load_nlp()
 
-# Título
-st.title("🔍 Buscador de Verbos en Modo Subjuntivo")
-st.markdown("Sube un archivo de texto en español para analizar verbos en **subjuntivo**.")
-
-# Subida de archivo
+# --- SUBIR Y ANALIZAR ARCHIVO ---
 uploaded_file = st.file_uploader("📤 Sube tu archivo .txt", type=["txt"])
 
 if uploaded_file is not None:
@@ -43,7 +50,7 @@ if uploaded_file is not None:
         text = uploaded_file.read().decode("utf-8")
         st.success("✅ Archivo cargado.")
 
-        # Análisis
+        # Procesar con spaCy
         doc = nlp(text)
         verbs = []
 
@@ -63,7 +70,7 @@ if uploaded_file is not None:
 
         if verbs:
             df = pd.DataFrame(verbs)
-            st.subheader(f"🎉 {len(df)} verbos en subjuntivo encontrados")
+            st.subheader(f"🎉 Se encontraron {len(df)} verbos en subjuntivo")
 
             tab1, tab2, tab3 = st.tabs(["📊 Estadísticas", "📄 Texto resaltado", "📋 Detalles"])
 
@@ -108,15 +115,20 @@ if uploaded_file is not None:
             st.info("ℹ️ No se encontraron verbos en subjuntivo.")
 
     except Exception as e:
-        st.error(f"❌ Error al procesar el archivo: {e}")
+        st.error("❌ Error al procesar el texto.")
+        st.exception(e)
 else:
     st.info("👈 Sube un archivo .txt para comenzar.")
 
 # Barra lateral
 with st.sidebar:
-    st.header("ℹ️ Ayuda")
+    st.header("ℹ️ Acerca de")
     st.markdown("""
-    - Solo archivos `.txt` en español.
-    - El modelo reconoce formas como: *hable, estés, fuera, vayamos*.
-    - Usa `requirements.txt` con el modelo descargable.
+    Esta app detecta verbos en **modo subjuntivo** en textos en español.
+    
+    ### ¿Qué detecta?
+    - hable, hables, hablemos
+    - fuera, fuerais, estés, pueda, vayas, etc.
+    
+    Ideal para estudiantes y profesores de ELE.
     """)
