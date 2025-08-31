@@ -1,3 +1,4 @@
 pandas
 plotly
 spacy
+es-core-news-sm
