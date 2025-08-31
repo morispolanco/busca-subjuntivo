@@ -4,6 +4,7 @@ import csv
 import io
 import pandas as pd
 import plotly.express as px
+import re
 
 # Configuración de la página
 st.set_page_config(
@@ -12,140 +13,110 @@ st.set_page_config(
     layout="wide"
 )
 
-# Cargar el modelo de spaCy
+# Cargar el modelo de spaCy (una sola vez, en caché)
 @st.cache_resource
 def load_nlp():
-    return spacy.load("es_core_news_sm")
+    try:
+        return spacy.load("es_core_news_sm")
+    except OSError as e:
+        st.error(f"""
+        ❌ No se pudo cargar el modelo 'es_core_news_sm'.  
+        Asegúrate de que está en `requirements.txt` como:
+        
+        `https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0.tar.gz`
+        
+        Error: {e}
+        """)
+        st.stop()
 
 nlp = load_nlp()
 
-# Título y descripción
+# Título
 st.title("🔍 Buscador de Verbos en Modo Subjuntivo")
-st.markdown("""
-Sube un archivo de texto en español y esta app identificará todos los verbos conjugados en **modo subjuntivo**.
-Incluye resaltado en el texto, estadísticas y descarga en CSV.
-""")
+st.markdown("Sube un archivo de texto en español para analizar verbos en **subjuntivo**.")
 
 # Subida de archivo
 uploaded_file = st.file_uploader("📤 Sube tu archivo .txt", type=["txt"])
 
 if uploaded_file is not None:
     try:
-        # Leer el archivo
         text = uploaded_file.read().decode("utf-8")
-        st.success("✅ Archivo cargado correctamente.")
+        st.success("✅ Archivo cargado.")
 
-        # Procesar el texto
+        # Análisis
         doc = nlp(text)
+        verbs = []
 
-        # Extraer verbos en subjuntivo
-        with st.spinner("Analizando verbos en subjuntivo..."):
-            subjunctive_verbs = []
-            for token in doc:
-                if token.pos_ == "VERB":
-                    mood = token.morph.get("Mood")
-                    if "Sub" in mood:
-                        subjunctive_verbs.append({
-                            "Verbo": token.text,
-                            "Lema": token.lemma_,
-                            "Modo": "Subjuntivo",
-                            "Tiempo": token.morph.get("Tense", [""])[0] or "Desconocido",
-                            "Persona": token.morph.get("Person", [""])[0] or "Desconocido",
-                            "Número": token.morph.get("Number", [""])[0] or "Desconocido",
-                            "Origen": token.sent.text.strip()  # oración completa
-                        })
+        for token in doc:
+            if token.pos_ == "VERB":
+                mood = token.morph.get("Mood")
+                if "Sub" in mood:
+                    verbs.append({
+                        "Verbo": token.text,
+                        "Lema": token.lemma_,
+                        "Modo": "Subjuntivo",
+                        "Tiempo": token.morph.get("Tense", [""])[0] or "Desconocido",
+                        "Persona": token.morph.get("Person", [""])[0] or "Desconocido",
+                        "Número": token.morph.get("Number", [""])[0] or "Desconocido",
+                        "Oración": token.sent.text.strip()
+                    })
 
-        # Mostrar resultados
-        if subjunctive_verbs:
-            df = pd.DataFrame(subjunctive_verbs)
-            total = len(df)
+        if verbs:
+            df = pd.DataFrame(verbs)
+            st.subheader(f"🎉 {len(df)} verbos en subjuntivo encontrados")
 
-            st.subheader(f"🎉 Se encontraron {total} verbos en subjuntivo")
+            tab1, tab2, tab3 = st.tabs(["📊 Estadísticas", "📄 Texto resaltado", "📋 Detalles"])
 
-            # Pestañas para organizar
-            tab1, tab2, tab3 = st.tabs(["📊 Estadísticas", "📄 Texto con resaltado", "📋 Tabla completa"])
-
-            # --- PESTAÑA 1: Gráficos ---
             with tab1:
                 col1, col2, col3 = st.columns(3)
-
                 with col1:
-                    fig1 = px.pie(df, names="Tiempo", title="📌 Por tiempo verbal")
-                    st.plotly_chart(fig1, use_container_width=True)
-
+                    fig = px.pie(df, names="Tiempo", title="Tiempo verbal")
+                    st.plotly_chart(fig)
                 with col2:
-                    fig2 = px.pie(df, names="Persona", title="👤 Por persona")
-                    st.plotly_chart(fig2, use_container_width=True)
-
+                    fig = px.pie(df, names="Persona", title="Persona")
+                    st.plotly_chart(fig)
                 with col3:
-                    fig3 = px.pie(df, names="Número", title="🔢 Por número")
-                    st.plotly_chart(fig3, use_container_width=True)
+                    fig = px.pie(df, names="Número", title="Número")
+                    st.plotly_chart(fig)
 
-                # Tabla de frecuencias
-                st.markdown("### 🔤 Frecuencia por forma verbal")
-                freq = df["Verbo"].value_counts().reset_index()
-                freq.columns = ["Verbo", "Frecuencia"]
-                st.dataframe(freq, use_container_width=True)
-
-            # --- PESTAÑA 2: Texto con resaltado ---
             with tab2:
-                st.markdown("### 📝 Texto original con verbos en subjuntivo resaltados")
-
-                # Resaltar verbos en HTML
-                highlighted_text = text
-                for verb in sorted(set(df["Verbo"]), key=len, reverse=True):  # orden por longitud
-                    highlight = f'<mark style="background-color: #FFEB3B; border-radius: 3px; padding: 2px 4px; margin: 0 2px;">{verb}</mark>'
-                    # Usamos expresión regular para evitar resaltar partes de palabras
-                    highlighted_text = re.sub(rf'\b({re.escape(verb)})\b', highlight, highlighted_text)
-
+                highlighted = text
+                for verb in sorted(df["Verbo"].unique(), key=len, reverse=True):
+                    highlighted = re.sub(
+                        rf'\b({re.escape(verb)})\b',
+                        f'<mark style="background: #FFEB3B; padding: 2px 6px; border-radius: 4px;">\\1</mark>',
+                        highlighted
+                    )
                 st.markdown(
-                    f'<div style="line-height: 1.8; font-size: 16px; padding: 15px; background-color: #f9f9f9; border-radius: 8px;">{highlighted_text}</div>',
+                    f'<div style="line-height: 1.8; padding: 15px; background: #f0f0f0; border-radius: 8px; max-height: 400px; overflow-y: auto;">{highlighted}</div>',
                     unsafe_allow_html=True
                 )
 
-            # --- PESTAÑA 3: Tabla completa ---
             with tab3:
                 st.dataframe(df, use_container_width=True)
 
-            # --- Descarga CSV ---
-            def convert_to_csv(dataframe):
-                return dataframe.to_csv(index=False).encode("utf-8")
-
-            csv_data = convert_to_csv(df)
-            filename = f"subjuntivo_{uploaded_file.name.replace('.txt', '')}.csv"
-
+            # Descarga CSV
+            csv_data = df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="⬇️ Descargar resultados como CSV",
+                "⬇️ Descargar CSV",
                 data=csv_data,
-                file_name=filename,
+                file_name=f"subjuntivo_{uploaded_file.name.replace('.txt', '')}.csv",
                 mime="text/csv"
             )
 
         else:
-            st.info("ℹ️ No se encontraron verbos en modo subjuntivo en el texto.")
+            st.info("ℹ️ No se encontraron verbos en subjuntivo.")
 
     except Exception as e:
-        st.error(f"❌ Ocurrió un error al procesar el archivo: {e}")
+        st.error(f"❌ Error al procesar el archivo: {e}")
 else:
-    st.info("👈 Por favor, sube un archivo de texto (.txt) para comenzar.")
+    st.info("👈 Sube un archivo .txt para comenzar.")
 
 # Barra lateral
 with st.sidebar:
-    st.header("ℹ️ Acerca de")
+    st.header("ℹ️ Ayuda")
     st.markdown("""
-    Esta app analiza textos en español y detecta automáticamente verbos en **modo subjuntivo** usando procesamiento del lenguaje natural.
-
-    ### Funcionalidades:
-    - ✅ Resaltado de verbos en el texto
-    - 📊 Gráficos por tiempo, persona y número
-    - 📥 Descarga en CSV
-    - 🧠 Basado en `spaCy` + `es_core_news_sm`
-
-    Ideal para:
-    - Estudiantes de ELE
-    - Profesores de gramática
-    - Investigación lingüística
+    - Solo archivos `.txt` en español.
+    - El modelo reconoce formas como: *hable, estés, fuera, vayamos*.
+    - Usa `requirements.txt` con el modelo descargable.
     """)
-
-# Para usar expresiones regulares
-import re
