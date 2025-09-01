@@ -309,7 +309,7 @@ SUBJUNTIVO_COMPLETO = {
 }
 
 # Conjunto para búsquedas rápidas
-SUBJ_SET = set(SUBJUNTIVO_COMPLETO.keys()
+SUBJ_SET = set(SUBJUNTIVO_COMPLETO.keys())
 
 def detectar_subjuntivo(texto):
     palabras = re.findall(r'\b\w+\b', texto, re.IGNORECASE)
