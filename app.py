@@ -1,241 +1,227 @@
 import streamlit as st
-import spacy
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
-import io
+import re
+from io import BytesIO
 
-# Cargar el modelo de spaCy para español
-try:
-    nlp = spacy.load("es_core_news_sm")
-except OSError:
-    st.error("El modelo de spaCy para español no está instalado. Ejecuta: python -m spacy download es_core_news_sm")
-    st.stop()
+# Configuración de la página
+st.set_page_config(
+    page_title="Analizador de Subjuntivo Español",
+    page_icon="📝",
+    layout="wide"
+)
 
-# Lista de terminaciones típicas del subjuntivo en español
+# Título y descripción
+st.title("🔍 Analizador de Modo Subjuntivo en Español")
+st.markdown("""
+Esta aplicación identifica y analiza todas las formas verbales en modo subjuntivo 
+en textos en español y genera un informe detallado en Excel.
+""")
+
+# Lista de terminaciones de verbos en subjuntivo
 subjuntivo_terminaciones = [
-    'ara', 'aras', 'áramos', 'aran', 'are', 'ares', 'áremos', 'aren',  # -ar
-    'iera', 'ieras', 'iéramos', 'ieran', 'iere', 'ieres', 'iéremos', 'ieren',  # -er/-ir irregular
-    'era', 'eras', 'éramos', 'eran', 'ere', 'eres', 'éremos', 'eren',  # -er
-    'iera', 'ieras', 'iéramos', 'ieran', 'iere', 'ieres', 'iéremos', 'ieren',  # -ir
-    'a', 'as', 'amos', 'an', 'e', 'es', 'emos', 'en',  # presente
-    'se', 'ses', 'semos', 'sen'  # imperfecto
+    'ara', 'aras', 'áramos', 'aran',  # Pretérito imperfecto (-ar)
+    'are', 'ares', 'áremos', 'aren',  # Futuro simple (-ar)
+    'iera', 'ieras', 'iéramos', 'ieran',  # Pretérito imperfecto (-er/-ir)
+    'iere', 'ieres', 'iéremos', 'ieren',  # Futuro simple (-er/-ir)
+    'era', 'eras', 'éramos', 'eran',  # Variante (-er)
+    'ese', 'eses', 'ésemos', 'esen',  # Pretérito imperfecto (variante)
+    'a', 'as', 'amos', 'an',  # Presente (-ar)
+    'e', 'es', 'emos', 'en',  # Presente (-er)
+    'a', 'as', 'amos', 'an',  # Presente (-ir)
+    'se', 'ses', 'semos', 'sen'  # Otra variante
 ]
 
 # Verbos irregulares comunes en subjuntivo
 verbos_irregulares_subjuntivo = [
-    'sea', 'seas', 'seamos', 'sean',
-    'vaya', 'vayas', 'vayamos', 'vayan',
-    'haya', 'hayas', 'hayamos', 'hayan',
-    'esté', 'estés', 'estemos', 'estén',
-    'dé', 'des', 'demos', 'den',
-    'sepa', 'sepas', 'sepamos', 'sepan',
-    'quepa', 'quepas', 'quepamos', 'quepan'
+    'sea', 'seas', 'seamos', 'sean',  # ser
+    'vaya', 'vayas', 'vayamos', 'vayan',  # ir
+    'haya', 'hayas', 'hayamos', 'hayan',  # haber
+    'esté', 'estés', 'estemos', 'estén',  # estar
+    'dé', 'des', 'demos', 'den',  # dar
+    'sepa', 'sepas', 'sepamos', 'sepan',  # saber
+    'quepa', 'quepas', 'quepamos', 'quepan'  # caber
 ]
 
-def es_subjuntivo(token):
-    """
-    Determina si un token es un verbo en modo subjuntivo
-    """
-    # Verificar si es verbo
-    if token.pos_ != 'VERB' and token.pos_ != 'AUX':
-        return False
-    
-    # Verificar por terminaciones
-    texto = token.text.lower()
-    if any(texto.endswith(terminacion) for terminacion in subjuntivo_terminaciones):
-        return True
+# Conectores que suelen introducir subjuntivo
+conectores_subjuntivo = [
+    'que', 'cuando', 'si', 'aunque', 'para que', 'a fin de que', 
+    'como si', 'a menos que', 'con tal de que', 'en caso de que',
+    'sin que', 'antes de que', 'ojalá', 'espero que', 'dudo que',
+    'no creo que', 'es posible que', 'es probable que'
+]
+
+def es_subjuntivo(palabra):
+    """Determina si una palabra es un verbo en subjuntivo"""
+    palabra = palabra.lower().strip('.,;:!?¿¡()[]{}"\'')
     
     # Verificar verbos irregulares
-    if texto in verbos_irregulares_subjuntivo:
+    if palabra in verbos_irregulares_subjuntivo:
         return True
     
-    # Verificar análisis morfológico de spaCy
-    if 'Mood=Sub' in token.morph:
-        return True
+    # Verificar por terminaciones
+    for terminacion in subjuntivo_terminaciones:
+        if palabra.endswith(terminacion):
+            return True
     
     return False
 
+def encontrar_clausula(texto, posicion_verbo):
+    """Encuentra la cláusula que contiene el verbo en subjuntivo"""
+    # Buscar hacia atrás para encontrar el inicio de la cláusula
+    inicio = 0
+    for conector in conectores_subjuntivo:
+        idx = texto.rfind(conector, 0, posicion_verbo)
+        if idx != -1 and idx > inicio:
+            inicio = idx
+    
+    # Buscar hacia adelante para encontrar el final de la cláusula
+    fin = len(texto)
+    for puntuacion in ['.', '!', '?', ';']:
+        idx = texto.find(puntuacion, posicion_verbo)
+        if idx != -1 and idx < fin:
+            fin = idx
+    
+    clausula = texto[inicio:fin].strip()
+    return clausula
+
 def analizar_texto(texto):
-    """
-    Analiza el texto y encuentra todos los verbos en subjuntivo
-    """
-    doc = nlp(texto)
+    """Analiza el texto y encuentra todos los verbos en subjuntivo"""
+    palabras = texto.split()
     resultados = []
     
-    for sentencia in doc.sents:
-        for token in sentencia:
-            if es_subjuntivo(token):
-                # Encontrar la cláusula completa
-                clausula = obtener_clausula(token, sentencia)
-                
-                resultados.append({
-                    'Verbo': token.text,
-                    'Lemma': token.lemma_,
-                    'Tiempo': obtener_tiempo_verbal(token),
-                    'Persona': obtener_persona(token),
-                    'Oración': sentencia.text.strip(),
-                    'Cláusula': clausula,
-                    'Posición': f"{token.idx}-{token.idx + len(token.text)}"
-                })
+    for i, palabra in enumerate(palabras):
+        if es_subjuntivo(palabra):
+            # Encontrar la posición de la palabra en el texto original
+            posicion = texto.find(palabra)
+            
+            # Encontrar la cláusula
+            clausula = encontrar_clausula(texto, posicion)
+            
+            # Determinar tiempo verbal aproximado
+            tiempo = determinar_tiempo_verbal(palabra)
+            
+            # Determinar persona y número
+            persona = determinar_persona(palabra)
+            
+            resultados.append({
+                'Verbo': palabra,
+                'Tiempo': tiempo,
+                'Persona': persona,
+                'Cláusula': clausula,
+                'Posición': f"Palabra {i+1}"
+            })
     
     return resultados
 
-def obtener_clausula(verbo, sentencia):
-    """
-    Extrae la cláusula subordinada que contiene el verbo en subjuntivo
-    """
-    clausula = []
-    encontrado = False
+def determinar_tiempo_verbal(verbo):
+    """Determina el tiempo verbal aproximado basado en la terminación"""
+    verbo = verbo.lower()
     
-    for token in sentencia:
-        # Buscar conectores subordinantes típicos
-        if token.text.lower() in ['que', 'cuando', 'si', 'aunque', 'para que', 'a fin de que']:
-            encontrado = True
-        
-        if encontrado:
-            clausula.append(token.text)
-            
-        if token == verbo:
-            break
-    
-    return ' '.join(clausula) if clausula else sentencia.text
-
-def obtener_tiempo_verbal(token):
-    """
-    Determina el tiempo verbal del verbo
-    """
-    morph = token.morph
-    if 'Tense=Pres' in morph:
+    if any(verbo.endswith(t) for t in ['a', 'as', 'amos', 'an', 'e', 'es', 'emos', 'en']):
         return 'Presente'
-    elif 'Tense=Past' in morph:
-        return 'Pretérito'
-    elif 'Tense=Imp' in morph:
-        return 'Imperfecto'
-    elif 'Tense=Fut' in morph:
-        return 'Futuro'
+    elif any(verbo.endswith(t) for t in ['ara', 'aras', 'áramos', 'aran', 'iera', 'ieras', 'iéramos', 'ieran', 'era', 'eras', 'éramos', 'eran', 'ese', 'eses', 'ésemos', 'esen']):
+        return 'Pretérito imperfecto'
+    elif any(verbo.endswith(t) for t in ['are', 'ares', 'áremos', 'aren', 'iere', 'ieres', 'iéremos', 'ieren']):
+        return 'Futuro simple'
     else:
         return 'Indeterminado'
 
-def obtener_persona(token):
-    """
-    Determina la persona del verbo
-    """
-    morph = token.morph
-    if 'Person=1' in morph and 'Number=Sing' in morph:
-        return '1ra singular'
-    elif 'Person=2' in morph and 'Number=Sing' in morph:
-        return '2da singular'
-    elif 'Person=3' in morph and 'Number=Sing' in morph:
-        return '3ra singular'
-    elif 'Person=1' in morph and 'Number=Plur' in morph:
-        return '1ra plural'
-    elif 'Person=2' in morph and 'Number=Plur' in morph:
-        return '2da plural'
-    elif 'Person=3' in morph and 'Number=Plur' in morph:
-        return '3ra plural'
+def determinar_persona(verbo):
+    """Determina la persona y número del verbo"""
+    verbo = verbo.lower()
+    
+    if verbo.endswith(('o', 'a', 'e')):  # 1ra singular
+        return '1ra persona singular'
+    elif verbo.endswith(('as', 'es')):  # 2da singular
+        return '2da persona singular'
+    elif verbo.endswith(('a', 'e')):  # 3ra singular
+        return '3ra persona singular'
+    elif verbo.endswith(('amos', 'emos', 'imos')):  # 1ra plural
+        return '1ra persona plural'
+    elif verbo.endswith(('áis', 'éis', 'ís')):  # 2da plural
+        return '2da persona plural'
+    elif verbo.endswith(('an', 'en')):  # 3ra plural
+        return '3ra persona plural'
     else:
         return 'Indeterminada'
 
 def crear_excel(resultados):
-    """
-    Crea un archivo Excel con los resultados
-    """
+    """Crea un archivo Excel con los resultados"""
     if not resultados:
         return None
     
     df = pd.DataFrame(resultados)
     
-    # Crear el archivo Excel con formato
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    # Crear el archivo Excel en memoria
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Subjuntivos', index=False)
         
-        # Obtener la hoja de trabajo para aplicar formato
+        # Obtener el libro y la hoja de trabajo para aplicar formato
         workbook = writer.book
         worksheet = writer.sheets['Subjuntivos']
         
-        # Aplicar formato a los encabezados
-        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-        header_font = Font(color="FFFFFF", bold=True)
+        # Formato para los encabezados
+        header_format = workbook.add_format({
+            'bold': True,
+            'text_wrap': True,
+            'valign': 'top',
+            'fg_color': '#366092',
+            'font_color': 'white',
+            'border': 1
+        })
         
-        for col in range(1, len(df.columns) + 1):
-            cell = worksheet.cell(row=1, column=col)
-            cell.fill = header_fill
-            cell.font = header_font
+        # Aplicar formato a los encabezados
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
         
         # Ajustar el ancho de las columnas
-        for column in worksheet.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = min(max_length + 2, 50)
-            worksheet.column_dimensions[column_letter].width = adjusted_width
+        for i, col in enumerate(df.columns):
+            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+            worksheet.set_column(i, i, max_len)
     
     output.seek(0)
     return output
 
-def main():
-    st.set_page_config(
-        page_title="Analizador de Subjuntivo Español",
-        page_icon="📝",
-        layout="wide"
-    )
-    
-    st.title("🔍 Analizador de Modo Subjuntivo en Español")
+# Sidebar con información
+with st.sidebar:
+    st.header("ℹ️ Información")
     st.markdown("""
-    Esta aplicación identifica y analiza todas las formas verbales en modo subjuntivo 
-    en textos en español y genera un informe detallado en Excel.
+    **Características:**
+    - Identifica verbos en subjuntivo
+    - Analiza tiempo y persona verbal
+    - Extrae cláusulas completas
+    - Genera informe en Excel
+    
+    **Ejemplos de subjuntivo:**
+    - Es importante que **estudies**
+    - Ojalá **llueva** mañana
+    - Quiero que **vengas** pronto
     """)
-    
-    # Sidebar con información
-    with st.sidebar:
-        st.header("ℹ️ Información")
-        st.markdown("""
-        **Características:**
-        - Identifica verbos en subjuntivo
-        - Analiza tiempo y persona verbal
-        - Extrae cláusulas completas
-        - Genera informe en Excel
-        
-        **Ejemplos de subjuntivo:**
-        - Es importante que **estudies**
-        - Ojalá **llueva** mañana
-        - Quiero que **vengas** pronto
-        """)
-    
-    # Área de texto para entrada
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        texto = st.text_area(
-            "Introduce el texto a analizar:",
-            height=300,
-            placeholder="Ejemplo: Es necesario que estudies más para el examen. Ojalá que tengas suerte en tu viaje..."
-        )
-    
-    with col2:
-        st.markdown("### 📊 Estadísticas")
-        if texto:
-            doc = nlp(texto)
-            total_palabras = len([token for token in doc if not token.is_punct])
-            total_oraciones = len(list(doc.sents))
-            st.metric("Palabras", total_palabras)
-            st.metric("Oraciones", total_oraciones)
-        else:
-            st.info("Introduce texto para ver estadísticas")
-    
-    # Botón para analizar
-    if st.button("🔍 Analizar Subjuntivo", type="primary"):
-        if not texto.strip():
-            st.warning("Por favor, introduce un texto para analizar.")
-            return
-        
+
+# Área de texto para entrada
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    texto = st.text_area(
+        "Introduce el texto a analizar:",
+        height=300,
+        placeholder="Ejemplo: Es necesario que estudies más para el examen. Ojalá que tengas suerte en tu viaje..."
+    )
+
+with col2:
+    st.markdown("### 📊 Estadísticas")
+    if texto:
+        total_palabras = len(texto.split())
+        st.metric("Palabras", total_palabras)
+    else:
+        st.info("Introduce texto para ver estadísticas")
+
+# Botón para analizar
+if st.button("🔍 Analizar Subjuntivo", type="primary"):
+    if not texto.strip():
+        st.warning("Por favor, introduce un texto para analizar.")
+    else:
         with st.spinner("Analizando texto..."):
             resultados = analizar_texto(texto)
         
@@ -265,23 +251,42 @@ def main():
                 tiempos = df['Tiempo'].value_counts()
                 st.metric("Tiempo más común", tiempos.index[0] if len(tiempos) > 0 else "N/A")
             with col3:
-                st.metric("Verbos únicos", df['Lemma'].nunique())
+                st.metric("Verbos únicos", df['Verbo'].nunique())
             
         else:
             st.info("ℹ️ No se encontraron verbos en modo subjuntivo en el texto.")
-    
-    # Ejemplos predefinidos
-    st.subheader("💡 Ejemplos para probar")
-    ejemplos = {
-        "Ejemplo 1": "Es importante que estudies para el examen. Ojalá que tengas buena suerte.",
-        "Ejemplo 2": "Quiero que vengas a la fiesta. Dudo que ella pueda asistir.",
-        "Ejemplo 3": "Sería bueno que lloviera pronto. Temo que se sequen las plantas."
-    }
-    
-    for nombre, ejemplo in ejemplos.items():
+
+# Ejemplos predefinidos
+st.subheader("💡 Ejemplos para probar")
+ejemplos = {
+    "Ejemplo 1": "Es importante que estudies para el examen. Ojalá que tengas buena suerte.",
+    "Ejemplo 2": "Quiero que vengas a la fiesta. Dudo que ella pueda asistir.",
+    "Ejemplo 3": "Sería bueno que lloviera pronto. Temo que se sequen las plantas."
+}
+
+cols = st.columns(3)
+for i, (nombre, ejemplo) in enumerate(ejemplos.items()):
+    with cols[i]:
         if st.button(f"📌 {nombre}"):
-            st.session_state.texto = ejemplo
+            texto = ejemplo
             st.rerun()
 
-if __name__ == "__main__":
-    main()
+# Información adicional
+with st.expander("📚 Acerca del modo subjuntivo"):
+    st.markdown("""
+    El modo subjuntivo en español se utiliza para expresar:
+    
+    - **Deseos**: Ojalá que tengas suerte
+    - **Dudas**: No creo que venga
+    - **Emociones**: Me alegra que estés aquí
+    - **Impersonalidad**: Es necesario que estudies
+    - **Consejos**: Te sugiero que leas más
+    - **Hipótesis**: Si tuviera dinero, viajaría
+    
+    Esta aplicación detecta las formas verbales más comunes del subjuntivo,
+    pero puede haber casos complejos que requieran análisis manual.
+    """)
+
+# Pie de página
+st.markdown("---")
+st.caption("Analizador de Modo Subjuntivo v1.0 | Desarrollado con Streamlit")
